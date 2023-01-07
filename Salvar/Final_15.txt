@@ -1,0 +1,566 @@
+#include "ardrone/ardrone.h"
+#define KEY_DOWN(key) (GetAsyncKeyState(key) & 0x8000);
+#define KEY_PUSH(key) (GetAsyncKeyState(key) & 0x0001);
+// %%%%%%%%%%%%%%%%%%%%%%
+// %%%%  Variables  %%%%%
+// %%%%%%%%%%%%%%%%%%%%%%
+// ArDrone
+ARDrone ardrone;
+int option;										// (0)video_archivo (1)webcam (2)parrot (3)imagen_archivo	
+// variables tiempo de ciclo y control
+int ts=0;										// tiempo de ciclo o tiempo de muestreo [ms]
+int kwait=0;									// tiempo entre frames (no tocar) (32)
+clock_t startClock, finishClock, diff_1,diff_2;	// variables de control 
+// variables tamaño de la pantalla
+int x_pant, y_pant;
+// variables escritura .txt
+FILE *fp;
+clock_t count_time=0;
+char name_file[20];
+char buffer[100];
+int count_file=0;
+// variable de tomar fotos 
+double count_photos=0; 
+char name_photo[20];
+// Variables de Grabar Video
+int band_video_1=0, band_video_2=0;
+CvVideoWriter *video;
+char filename[256];
+SYSTEMTIME st;
+// Variables NavData Ardrone
+double roll;
+double pitch;
+double yaw;
+double altitude;;
+double velocity, vx_1, vy_1, vz_1; 
+int battery;
+// variables controles: trackbar (iniciadas)
+int TB_camera=1;			// (2 posiciones) Cambiar Camara
+int TB_landing=0;			// (2 posiciones) Aterrizar, despegar
+int TB_pitch_angle=1;		// (3 posiciones) angulo de pitch 
+int TB_roll_angle=1;		// (3 posiciones) angulo de roll
+int TB_vz=1;				// (3 posiciones) velocidad en z
+int TB_vr=1;				// (3 posiciones) velocidad de rotacion
+int TB_move_3d=1;			// (2 posiciones) desabilitar velocidades y angulos de entrada
+// variables move 3D Drone
+double vx=0.0;
+double vy=0.0;
+double vz=0.0;
+double vr=0.0;
+double pond;
+// variables imagenes video
+IplImage *image; 
+IplImage *hsv;
+IplImage *grises;
+IplImage *b_n1;
+IplImage *b_n2;
+IplImage *filter_1;
+IplImage *bordes;
+IplImage *edit_1;
+IplImage *edit_2;
+IplImage *Equali;
+IplImage *affine_t;  
+IplImage *contour_image;
+IplImage *contour_draw_aprox;
+IplImage *contour_dado;
+CvCapture *capture;
+// Variables edicion
+int band_edition_1;				// habilitar edicion
+CvScalar red=CV_RGB(250,0,0);	// colores
+CvScalar green=CV_RGB(0,250,0);
+CvScalar blue=CV_RGB(0,0,250);
+CvScalar white=CV_RGB(255,255,255);
+CvScalar black=CV_RGB(0,0,0);	
+int minH=0,maxH=100;			// binarizacion por color
+int minS=0,maxS=200;
+int minV=0,maxV=255;
+CvScalar lower=cvScalar(minH,minS,minV);
+CvScalar upper=cvScalar(maxH,maxS,maxV);
+int umbral=187;					// binarizacion por grises (131 arriba - 187 abajo)
+int canny1=100, canny2=10;		// bordes canny
+int ite=1;						// erode, dilate
+CvMat* warp_mat=cvCreateMat(2,3,CV_32FC1);	// Affine Transform trapecio
+CvMat* rot_mat=cvCreateMat(2,3,CV_32FC1);	// Affine Transform rotacion y scale
+CvPoint2D32f srcTri[3],dstTri[3];			// puntos(x,y) trapecio
+CvPoint2D32f center;						// centro angle scale
+double angle=0.0,scale=1.0;					// angle y scale
+CvSeq *contours_origi;									// contornos
+CvSeq *contours_aprox;									// aproximacion a polinomio 
+CvSeq *contours_copy;									// copia
+CvSeq *contours_analy;									// analysis
+CvMemStorage* g_storage=cvCreateMemStorage(0);			// almacenamiento de memoria contornos
+int n=0,Nc,N_dado;										// contador contornos
+double area;											// area contorno
+CvPoint* p;												// puntos de cada esquina contorno aproximado
+CvPoint* es1;											// puntos de cada esquina contorno aproximado
+CvPoint* es2;											// puntos de cada esquina contorno aproximado
+CvPoint* es3;											// puntos de cada esquina contorno aproximado
+CvPoint* es4;											// puntos de cada esquina contorno aproximado
+CvPoint* interior;
+int Xmin,Xmax,Ymin,Ymax;								// minimos y maximos
+CvBox2D caja;											// aproxima a cuadrado (centro,alto,ancho,angulo)
+CvFont font1;					// Dibujar circulo y letras
+CvPoint pt1,pt2;				// centros
+char text_1[10],*text;			// texto
+// %%%%%%%%%%%%%%%%%%%%%%
+// %%%%%  Funtions  %%%%%
+// %%%%%%%%%%%%%%%%%%%%%%
+void control_ts(void) // Control Tiempo
+	{
+		finishClock = clock();													// Final del ciclo
+		// ** OJO aqui se produce un pequeño error								// **OJO
+		diff_1=difftime(finishClock, startClock);								// Tiempo del ciclo sin retardo
+		if(diff_1<ts) {msleep(ts-diff_1);}				// Agrego tiempo de retardo
+		finishClock = clock();													// Tiempo del ciclo con retardo (real)
+		diff_2=difftime(finishClock, startClock);								// **OJO
+		// ** OJO aqui se produce un pequeño error
+		startClock = clock();		
+
+
+	}
+
+void tamaño_pant(void) // tamaño de pantalla
+	{
+		x_pant=GetSystemMetrics(SM_CXSCREEN);
+		y_pant=GetSystemMetrics(SM_CYSCREEN);
+		printf("x:%d	y:%d \n",x_pant,y_pant);
+	}
+
+void write_txt(int i) // archivo .txt
+	{
+		switch(i)
+			{
+				case 0: sprintf(name_file,"C:/datos_%d.txt",count_file);						// nombre archivo
+						fp=fopen(name_file,"w+");												// crea archivo
+						break;
+
+				case 1:	if (option==2)
+							{	sprintf(buffer,"%d	%d	%d	%d	%d	%d	%3.3f	%3.3f	%3.3f	%3.3f	%3.3f	%3.3f	%3.3f	%d	%3.3f	%3.3f	%3.3f	%3.3f\n",count_time,diff_1,diff_2,ts,option,count_file,pitch,roll,yaw,altitude,vx_1,vy_1,vz_1,battery,vx,vy,vz,vr);  // escribe variables
+							}
+						else 
+							{	sprintf(buffer,"%d	%d	%d	%d	%d	%d\n",count_time,diff_1,diff_2,ts,option,count_file);	// escribe variables
+							}
+						//count_time=count_time+ts;												// corre tiempo (ideal)
+						count_time=count_time+diff_2;											// corre tiempo (real)
+						fp=fopen(name_file,"r+");												// abre archivo
+						fseek(fp,0,SEEK_END);													// posicionar al final
+						fprintf(fp,buffer);														// escribir en el archivo
+						fclose(fp);																// Cerrar archivo
+						break;
+				
+				case 2:	sprintf(buffer,"%d	%d	%d	%d	%d	%d\n",count_time,diff_1,diff_2,ts,option,count_file+1);
+						fp=fopen(name_file,"r+");												// abre archivo
+						fseek(fp,0,SEEK_END);													// posicionar al final
+						fprintf(fp,buffer);														// escribir en el archivo
+						fclose(fp);																// Cerrar archivo
+					
+						count_file++;
+						sprintf(name_file,"C:/datos_%d.txt",count_file); 
+						fp=fopen(name_file,"w+"); 
+						count_time=0;
+						msleep(300);
+						break;
+			}
+	}
+
+void start_ini(int i) // inicializa video, webCam, parrot, imagen
+	{	
+		cvInitFont(&font1,CV_FONT_HERSHEY_SIMPLEX,1,1,0,4,8);		// iniciar fuente para escribir
+		switch(i)
+			{
+				case 0: capture=cvCreateFileCapture("C:/Fly_2013_06_10_18_39_58.avi");
+						break;
+
+				case 1:	capture=cvCreateCameraCapture(0);
+						break;
+				
+				case 2:	if (!ardrone.open()) printf("Failed to initialize.\n");
+						battery=ardrone.getBatteryPercentage();
+						ardrone.setCamera(1); msleep(500);
+						break;
+
+				case 3: break;
+			}
+	}
+
+void cargar_imagen(int i) // carga imagen
+	{	
+		switch(i)
+			{
+				case 0: image=cvQueryFrame(capture);
+						break;
+
+				case 1:	image=cvQueryFrame(capture);	
+						break;
+				
+				case 2:	image=ardrone.getImage();					 
+						break; 
+				
+				case 3: image=cvLoadImage( "C:/prueba_4_1.jpg");
+						break;
+			}
+	}
+
+void tomar_foto(void)  // toma foto
+	{
+		count_photos=count_photos+1;
+		msleep(300);	
+		sprintf(name_photo,"C:/foto_%2.0f.jpg",count_photos);	
+		cvSaveImage(name_photo,image);
+	}
+
+void switch_camera(int x)
+{ 
+	ardrone.setCamera(x);
+}
+
+void switch_land(int x)
+{ 
+	if (x==1 && ardrone.onGround()) ardrone.takeoff();  // despuegue
+	if (x==0 && !ardrone.onGround()) ardrone.landing();	// aterrice
+}
+
+void switch_pitch(int x)
+{ 
+    if (x==0)   vx=-1.0;
+	if (x==1)   vx= 0.0;
+	if (x==2)   vx= 1.0;
+    if (TB_move_3d==0) vx= 0.0;
+}
+
+void switch_roll(int x)
+{ 
+    if (x==0)   vy=-1.0;
+	if (x==1)   vy= 0.0;
+	if (x==2)   vy= 1.0;
+	if (TB_move_3d==0) vy= 0.0;
+}
+
+void switch_vz(int x)
+{ 
+    if (x==0)   vz=-1.0;
+	if (x==1)   vz= 0.0;
+	if (x==2)   vz= 1.0;
+	if (TB_move_3d==0) vz= 0.0;
+}
+
+void switch_vr(int x)
+{ 
+    if (x==0)   vr=-1.0;
+	if (x==1)   vr= 0.0;
+	if (x==2)   vr= 1.0;
+	if (TB_move_3d==0) vr= 0.0;
+}
+
+void switch_on(int x)
+{ 
+	if (x==0)   
+		{	vx = 0.0; vy = 0.0; vz = 0.0; vr = 0.0;
+			TB_pitch_angle=1; 
+			TB_roll_angle=1;
+			TB_vz=1;
+			TB_vr=1;
+		}
+}
+
+void controles(void)
+	{	
+		cvNamedWindow("controles",1);											// crear ventana imagen
+		cvResizeWindow("controles",300,350);									// propiedad cambiar tamaño de la ventana
+		//cvMoveWindow("controles",407,0);										// propieda mover ventana a punto (x,y) de la pantalla
+		cvCreateTrackbar("Camera","controles",&TB_camera,1,switch_camera);		// camara
+		cvCreateTrackbar("Landing","controles",&TB_landing,1,switch_land);		// take off / landing
+		cvCreateTrackbar("< Pitch","controles",&TB_pitch_angle,2,switch_pitch);	// <pitch
+		cvCreateTrackbar("< Roll","controles",&TB_roll_angle,2,switch_roll);	// <roll
+		cvCreateTrackbar("Vz","controles",&TB_vz,2,switch_vz);					// vz
+		cvCreateTrackbar("Vr","controles",&TB_vr,2,switch_vr);					// vr
+		cvCreateTrackbar("Move3D","controles",&TB_move_3d,1,switch_on);			// move 3d
+	}
+
+
+void start_video(void)
+	{
+		GetLocalTime(&st);
+		sprintf(filename,"C:/Fly_%d_%02d_%02d_%02d_%02d_%02d.avi",st.wYear,st.wMonth,st.wDay,st.wHour,st.wMinute,st.wSecond);
+		video=cvCreateVideoWriter(filename,CV_FOURCC('D','I','V','X'),30,cvGetSize(image));
+	}
+
+
+void record_video(void)
+	{
+		cvWriteFrame(video,image);
+	}
+
+void start_edition(void)
+	{	
+		// Imagenes de Edicion
+		hsv=cvCloneImage(image);
+		b_n1=cvCreateImage(cvGetSize(image),IPL_DEPTH_8U,1);
+		grises=cvCreateImage(cvGetSize(image),IPL_DEPTH_8U,1);
+		Equali=cvCreateImage(cvGetSize(image),IPL_DEPTH_8U,1);
+		b_n2=cvCreateImage(cvGetSize(image),IPL_DEPTH_8U,1);
+		filter_1=cvCreateImage(cvGetSize(image),IPL_DEPTH_8U,3);
+		bordes=cvCreateImage(cvGetSize(image),image->depth,1);
+		contour_image=cvCreateImage(cvGetSize(image),IPL_DEPTH_8U,1);
+		contour_draw_aprox=cvCreateImage(cvGetSize(image),8,3);
+		contour_dado=cvCreateImage(cvGetSize(image),8,3);
+
+		affine_t=cvCloneImage(b_n2);
+		affine_t->origin=b_n2->origin;
+		cvZero(affine_t);
+		// Source Triangle
+		srcTri[0].x=(image->width*0)-1;		srcTri[0].y=(image->height*0)-1;
+		srcTri[1].x=(image->width*1)-1;		srcTri[1].y=(image->height*0)-1;
+		srcTri[2].x=(image->width*0)-1;		srcTri[2].y=(image->height*1)-1;
+		// Destination Triangle
+		dstTri[0].x=image->width*1;			dstTri[0].y=image->height*0;
+		dstTri[1].x=image->width*0;			dstTri[1].y=image->height*0;
+		dstTri[2].x=image->width*1;			dstTri[2].y=image->height*1;
+		// WarpMatrix 
+		cvGetAffineTransform(srcTri,dstTri,warp_mat);
+
+		// ((Ventana Original))
+		cvNamedWindow("Original",CV_WINDOW_AUTOSIZE);
+		//cvCreateTrackbar("ts", "Original", &ts, 200);
+		// ((Ventana HSV))
+		//cvNamedWindow("HSV",CV_WINDOW_AUTOSIZE);
+		// ((Ventana B&W colores))
+		//cvNamedWindow("B&W_binalized_Colours",CV_WINDOW_AUTOSIZE);
+		//cvCreateTrackbar("minH","B&W_binalized_Colours",&minH,255);
+		//cvCreateTrackbar("maxH","B&W_binalized_Colours",&maxH,255);
+		//cvCreateTrackbar("minS","B&W_binalized_Colours",&minS,255);
+		//cvCreateTrackbar("maxS","B&W_binalized_Colours",&maxS,255);
+		//cvCreateTrackbar("minV","B&W_binalized_Colours",&minV,255);
+		//cvCreateTrackbar("maxV","B&W_binalized_Colours",&maxV,255);
+		// ((Ventana Grises))
+		cvNamedWindow("Grises",CV_WINDOW_AUTOSIZE);
+		// ((Ventana B&W grises)) 
+		cvNamedWindow("B&W_Grises",CV_WINDOW_AUTOSIZE);
+		cvCreateTrackbar("umbral","B&W_Grises",&umbral,255);
+		// ((Ventana Histogram Equalization))
+		//cvNamedWindow("Equalization",1);
+		// ((Ventana Filtros)) 
+		//cvNamedWindow("Filtros",CV_WINDOW_AUTOSIZE);
+		//cvCreateTrackbar("ite","Filtros",&ite,255);
+		// ((Ventana Bordes))
+		//cvNamedWindow("Bordes_Canny",CV_WINDOW_AUTOSIZE);
+		//cvCreateTrackbar("tresh_1","Bordes_Canny",&canny1,255);
+		//cvCreateTrackbar("tresh_2","Bordes_Canny",&canny2,255);
+		// ((Ventana Affine Transform))
+		//cvNamedWindow("Affine Transform",1);
+		// ((Ventana Contours))
+		cvNamedWindow("Contours",1);
+		// ((Ventana Contours_Aprox))
+		cvNamedWindow("Contours_Aprox",1);
+		cvNamedWindow("Contours_Aprox_2",1);
+	}
+
+void editar_imagen(void)
+	{
+		//// HSV	
+		//cvCvtColor(image,hsv,CV_RGB2HSV_FULL);
+		//cvShowImage("HSV",hsv);
+
+		//// Black and White with Binalized
+		//lower=cvScalar(minH, minS, minV);
+		//upper=cvScalar(maxH, maxS, maxV);
+		//cvInRangeS(image, lower, upper, b_n1);
+		//cvShowImage("B&W_binalized_Colours",b_n1);
+
+		// grises
+		cvCvtColor(image,grises,CV_RGB2GRAY);
+		cvShowImage("Grises",grises);
+
+		//Convertir de grises a blanco y negro
+		cvThreshold(grises,b_n2,umbral,255,CV_THRESH_BINARY); 
+		cvShowImage("B&W_Grises",b_n2);
+
+		//// Histogram Equalization
+		//cvEqualizeHist(grises,Equali);
+		//cvShowImage("Equalization",Equali);
+
+		// Contours
+		//if(g_storage==NULL)	{ g_storage=cvCreateMemStorage(0);} 
+		//else {cvClearMemStorage(g_storage);
+		cvZero(contour_image);
+		cvZero(contour_draw_aprox);
+		cvZero(contour_dado);
+		Nc=cvFindContours(b_n2,g_storage,&contours_origi,sizeof(CvContour),CV_RETR_LIST,CV_CHAIN_APPROX_SIMPLE,cvPoint(0,0));  // Numero de Contornos
+		if(contours_origi)
+			{	cvDrawContours(contour_image,contours_origi,white,white,1,1,8);
+				cvShowImage( "Contours",contour_image);
+				contours_aprox=cvApproxPoly(contours_origi,sizeof(CvContour),g_storage,CV_POLY_APPROX_DP,7,1);
+				contours_analy=contours_aprox;
+				contours_copy=contours_aprox;
+				cvDrawContours(contour_draw_aprox,contours_aprox,red,blue,1,1,8);
+				cvShowImage("Contours_Aprox",contour_draw_aprox);
+			}
+
+		printf( "# Contour:%d\n",Nc);
+
+		n=0;		
+		while(contours_aprox)
+			{	//printf( "Contour #%d -> %d elements \n",n,c->total);
+				area=fabs(cvContourArea(contours_aprox));   // mido area
+				caja=cvMinAreaRect2(contours_aprox,0);		// aproxima a cuadro, mido centro tamaño y angle ((CvBox2D))
+				//printf("Area: %2.2f  Centro{%2.2f,%2.2f} tamaño{%2.2f,%2.2f}  angle{%2.2f}\n ",area,caja.center.x,caja.center.y,caja.size.height,caja.size.width,caja.angle);
+						
+
+				//for (int i=0; i<contornos_aprox->total; i++) // escribo puntos de cada contorno
+				//	{	p=CV_GET_SEQ_ELEM(CvPoint,contornos_aprox,i);  // ((CvPoint));
+				//		printf("(%d,%d)\n",p->x,p->y );
+				//	}
+
+
+				//if(cvCheckContourConvexity(contornos_aprox))
+				if(contours_aprox->total==4)
+					{
+						if (area>1000 && area<6000)
+							{	
+								// Dibujo circulo
+								pt1=cvPoint(caja.center.x,caja.center.y);
+								cvCircle(contour_dado,pt1,3,white,2,1);
+	
+								cvDrawContours(contour_dado,contours_aprox,red,blue,-1,1,8);  // antepenultimo parametro (-1) negativo me grafica solo el contorno donde se encuentra
+								cvShowImage("Contours_Aprox_2",contour_dado);
+
+								// obtengo de nuevo(ya que no la coje)
+								//cvThreshold(grises,b_n2,umbral,255,CV_THRESH_BINARY); 
+
+								//Puntos de las esquinas
+								es1=CV_GET_SEQ_ELEM(CvPoint,contours_aprox,0);
+								es2=CV_GET_SEQ_ELEM(CvPoint,contours_aprox,1);
+								es3=CV_GET_SEQ_ELEM(CvPoint,contours_aprox,2);
+								es4=CV_GET_SEQ_ELEM(CvPoint,contours_aprox,3);
+								printf("(%d,%d) (%d,%d) (%d,%d) (%d,%d)\n",es1->x,es1->y,es2->x,es2->y,es3->x,es3->y,es4->x,es4->y);
+								// Valor min & max
+								Xmin=es1->x;
+								if(es2->x < Xmin) Xmin=es2->x;
+								if(es3->x < Xmin) Xmin=es3->x;
+								if(es4->x < Xmin) Xmin=es4->x;
+								Xmax=es1->x;
+								if(es2->x > Xmax) Xmax=es2->x;
+								if(es3->x > Xmax) Xmax=es3->x;
+								if(es4->x > Xmax) Xmax=es4->x;
+								Ymin=es1->y;
+								if(es2->y < Ymin) Ymin=es2->y;
+								if(es3->y < Ymin) Ymin=es3->y;
+								if(es4->y < Ymin) Ymin=es4->y;
+								Ymax=es1->y;
+								if(es2->y > Ymax) Ymax=es2->y;
+								if(es3->y > Ymax) Ymax=es3->y;
+								if(es4->y > Ymax) Ymax=es4->y;
+								printf("Xmin:%d Xmax:%d Ymin:%d Ymax:%d \n",Xmin,Xmax,Ymin,Ymax);
+
+								// Numero del dado
+								//c->first;
+								N_dado=0;
+								
+								contours_analy=contours_copy;
+								printf("c_element_size: %d \n",contours_analy->elem_size);
+								while(contours_analy)
+									{  	//cvWaitKey(0);
+										interior=CV_GET_SEQ_ELEM(CvPoint,contours_analy,0);
+										printf("Inte_x:%d Inte_y:%d\n",interior->x,interior->y);
+										//if (cvContourArea(c)>10 &&(interior->x != es1->x) && (interior->x != es2->x) && (interior->x != es3->x) && (interior->x != es4->x) && (interior->y != es1->y) && (interior->y != es2->y) && (interior->y != es3->y) && (interior->y != es4->y))
+										if (contours_analy->total>=2 && cvArcLength(contours_analy)>20 )
+											{
+												if ((interior->x < Xmax)&&(interior->x > Xmin)&&(interior->y < Ymax)&&(interior->y > Ymin)) {N_dado++;}
+											}
+										printf("N_DADO:%d\n",N_dado);
+										contours_analy=contours_analy->h_next;
+									}
+
+								// escribo en imagen
+								sprintf(text_1,"No. %d",N_dado);
+								text=text_1;
+								pt2=cvPoint(caja.center.x,caja.center.y);
+								cvPutText(image,text,pt2,&font1,green);
+								printf("asdasdasada OLE OLE OLE OLE \n");
+								//cvWaitKey(0);
+							}
+					}
+				contours_aprox=contours_aprox->h_next;
+				n++;
+			}
+	
+		//// Procesamiento (filtros)
+		////cvSmooth(image,filter_1,CV_GAUSSIAN,31,0);
+		////cvSmooth(image,filter_1,CV_BLUR,31,0);
+		////cvSmooth(image,filter_1,CV_GAUSSIAN,31,0);
+		////cvSmooth(image,filter_1,CV_MEDIAN,31,0);
+		////cvErode(image,filter_1,NULL,ite);	// (Negros)probar estos dos Realzan los bordes un poco
+		//cvDilate(image,filter_1,NULL,ite);	// (Blancos)probar estos dos Realzan los bordes un poco
+		//cvShowImage("Filtros",filter_1);
+
+		//// Bordes Canny
+		//cvCanny(image,bordes,canny1,canny2,3); 
+		//cvShowImage("Bordes_Canny",bordes);
+
+		////Affine Transform
+		//cvWarpAffine(image,affine_t,warp_mat);						// realiza transformacion paralelogramo
+		//cvShowImage("Affine Transform",affine_t);
+		//cvWarpAffine(affine_t,affine_t,rot_mat);					// realiza transformacion rot and scale
+		//cvShowImage("Affine Transform2",affine_t);
+	}
+// %%%%%%%%%%%%%%%%%%%%%%
+// %%%%%%%  MAIN  %%%%%%%
+// %%%%%%%%%%%%%%%%%%%%%%
+void main(void)
+{ 
+	option=0;				// (0)video_archivo (1)webcam (2)parrot (3)imagen_archivo
+	band_edition_1=1;		// Editar (0)OFF (1)ON
+	start_ini(option);		// inicializa   
+	write_txt(0);			// crea archivo .txt
+	cargar_imagen(option);	// carga imagen
+	if(band_edition_1==1) start_edition(); 
+
+
+    while (!GetAsyncKeyState(VK_ESCAPE)) 
+		{	cvWaitKey(kwait+1);											// espera para mover imagen
+			cvShowImage("Original", image);								// mostrar original
+			cargar_imagen(option);										// carga imagen
+			if (option==0 && image==NULL) return;						// cerrar cuando acabe el video
+			if(band_edition_1==1) editar_imagen();
+
+			
+			if (option==2)
+				{	if(!ardrone.update()) break;
+					pitch=ardrone.getPitch()*RAD_TO_DEG;
+					roll=ardrone.getRoll()*RAD_TO_DEG;
+					yaw=ardrone.getYaw()*RAD_TO_DEG;
+					altitude=ardrone.getAltitude();
+					velocity=ardrone.getVelocity(&vx_1,&vy_1,&vz_1);
+					battery=ardrone.getBatteryPercentage();
+					//printf("T:%2.2f Bat:%d p:%2.3f y:%2.3f r:%2.3f a:%2.3f vx:%2.3f vy:%2.3f vz:%2.3f \n",(float)count_time/1000.0,battery,pitch,yaw,roll,altitude,vx_1,vy_1,vz_1);
+					printf("T:%2.2f   TsR:%d   TcR:%d \n",(float)count_time/1000.0,diff_1,diff_2);
+					pond=1;
+					ardrone.move3D(vx*pond,vy*pond,vz*pond,vr*pond);
+				}
+
+			else
+				{
+					printf("T:%2.2f   TsR:%d   TcR:%d \n",(float)count_time/1000.0,diff_1,diff_2);
+				}
+			
+
+			if (option==2 && cvGetWindowProperty("controles",1)==-1) controles();	// si no esta ventana de control (abrirla)
+			if (GetAsyncKeyState('P')) tomar_foto();								// tomar foto
+			if (GetAsyncKeyState('N')) write_txt(2);								// cambiar a nuevo .txt con otro nombre 
+			// tomar video
+			if (GetAsyncKeyState('R')){if(band_video_1==0){start_video();band_video_1=1;}band_video_2=1;}
+			if (band_video_2==1) record_video();
+
+			write_txt(1);															// escribe en archivo .txt
+			control_ts();															// control de tiempo
+		}
+
+	cvReleaseCapture(&capture);
+	ardrone.landing();
+	ardrone.close();
+	fclose(fp);
+	cvReleaseImage(&affine_t);
+	cvReleaseMat(&rot_mat);
+	cvReleaseMat(&warp_mat);
+    cvReleaseVideoWriter(&video);
+}
